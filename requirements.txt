@@ -1,0 +1,7 @@
+keyboard
+Pillow
+pynput
+tk
+requests
+paddleocr
+paddlepaddle
