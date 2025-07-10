@@ -1,5 +1,7 @@
 import time
 import tkinter as tk
+import ctypes
+import ctypes.wintypes
 
 import keyboard
 import requests
@@ -11,8 +13,12 @@ from pynput import mouse
 class ScreenshotTool:
     def __init__(self):
         self.start_pos = None
+        self.start_pos_logical = None
         self.is_capturing = False
         self.last_click_time = 0
+
+        # 设置 DPI 感知
+        self._set_dpi_awareness()
 
         # 创建主窗口
         self.root = tk.Tk()
@@ -20,13 +26,12 @@ class ScreenshotTool:
         self.selection_box = None
         self.overlay = None
 
-        # 获取屏幕尺寸
-        self.screen_width = self.root.winfo_screenwidth()
-        self.screen_height = self.root.winfo_screenheight()
+        # 获取屏幕尺寸和缩放比例
+        self._init_screen_info()
 
         # 初始化 OCR
         try:
-            self.ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+            self.ocr = PaddleOCR(use_textline_orientation=True, lang="ch")
             print("OCR 初始化成功")
         except Exception as e:
             print(f"OCR 初始化失败: {e}")
@@ -35,6 +40,58 @@ class ScreenshotTool:
         # 添加文本窗口引用
         self.text_window = None
         self.text_area = None
+
+    def _set_dpi_awareness(self):
+        """设置 DPI 感知"""
+        try:
+            # 设置进程 DPI 感知
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except:
+            try:
+                # 备用方案
+                ctypes.windll.user32.SetProcessDPIAware()
+            except:
+                print("无法设置 DPI 感知")
+
+    def _init_screen_info(self):
+        """初始化屏幕信息和缩放比例"""
+        try:
+            # 获取主显示器的物理尺寸
+            user32 = ctypes.windll.user32
+            self.physical_screen_width = user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            self.physical_screen_height = user32.GetSystemMetrics(1)  # SM_CYSCREEN
+
+            # 获取逻辑尺寸
+            self.logical_screen_width = self.root.winfo_screenwidth()
+            self.logical_screen_height = self.root.winfo_screenheight()
+
+            # 计算缩放比例
+            self.scale_x = self.physical_screen_width / self.logical_screen_width
+            self.scale_y = self.physical_screen_height / self.logical_screen_height
+
+            print(f"物理屏幕尺寸: {self.physical_screen_width}x{self.physical_screen_height}")
+            print(f"逻辑屏幕尺寸: {self.logical_screen_width}x{self.logical_screen_height}")
+            print(f"缩放比例: {self.scale_x:.2f}x{self.scale_y:.2f}")
+
+            # 使用物理尺寸作为屏幕尺寸
+            self.screen_width = self.physical_screen_width
+            self.screen_height = self.physical_screen_height
+
+        except Exception as e:
+            print(f"获取屏幕信息失败: {e}")
+            # 备用方案：使用逻辑尺寸
+            self.screen_width = self.root.winfo_screenwidth()
+            self.screen_height = self.root.winfo_screenheight()
+            self.scale_x = 1.0
+            self.scale_y = 1.0
+
+    def _logical_to_physical(self, x, y):
+        """将逻辑坐标转换为物理坐标"""
+        return int(x * self.scale_x), int(y * self.scale_y)
+
+    def _physical_to_logical(self, x, y):
+        """将物理坐标转换为逻辑坐标"""
+        return int(x / self.scale_x), int(y / self.scale_y)
 
     def create_overlay(self):
         # 创建全屏半透明遮罩
@@ -70,7 +127,11 @@ class ScreenshotTool:
             return 'break'
 
         self.last_click_time = current_time
-        self.start_pos = (event.x_root, event.y_root)
+        # 将逻辑坐标转换为物理坐标用于截图
+        physical_x, physical_y = self._logical_to_physical(event.x_root, event.y_root)
+        self.start_pos = (physical_x, physical_y)
+        # 但选择框仍使用逻辑坐标
+        self.start_pos_logical = (event.x_root, event.y_root)
         self.create_selection_box()
         return 'break'
 
@@ -79,7 +140,10 @@ class ScreenshotTool:
         if not self.is_capturing or not self.start_pos:
             return 'break'
 
-        end_pos = (event.x_root, event.y_root)
+        # 将逻辑坐标转换为物理坐标用于截图
+        physical_x, physical_y = self._logical_to_physical(event.x_root, event.y_root)
+        end_pos = (physical_x, physical_y)
+
         if self.selection_box:
             self.selection_box.destroy()
         if self.overlay:
@@ -90,15 +154,15 @@ class ScreenshotTool:
 
     def _on_overlay_motion(self, event):
         """处理遮罩层的鼠标移动事件"""
-        if not self.is_capturing or not self.start_pos:
+        if not self.is_capturing or not self.start_pos_logical:
             return 'break'
 
         x, y = event.x_root, event.y_root
-        if (x, y) != self.start_pos and self.start_pos != (0, 0):
-            left = min(x, self.start_pos[0])
-            top = min(y, self.start_pos[1])
-            width = abs(x - self.start_pos[0])
-            height = abs(y - self.start_pos[1])
+        if (x, y) != self.start_pos_logical and self.start_pos_logical != (0, 0):
+            left = min(x, self.start_pos_logical[0])
+            top = min(y, self.start_pos_logical[1])
+            width = abs(x - self.start_pos_logical[0])
+            height = abs(y - self.start_pos_logical[1])
 
             if width < 1 or height < 1:
                 return 'break'
@@ -132,7 +196,7 @@ class ScreenshotTool:
         self.canvas.delete('all')
         # 绘制边框
         self.canvas.create_rectangle(
-            1, 1, width-2, height-2,  # 稍微内缩一点，避免边框被透明化
+            1, 1, width - 2, height - 2,  # 稍微内缩一点，避免边框被透明化
             outline='#00B7FF',
             width=2
         )
@@ -140,14 +204,15 @@ class ScreenshotTool:
         # 绘制四角小方块
         square_size = 4
         corner_positions = [
-            (0, 0), (width/2, 0), (width-square_size, 0),  # 上边
-            (0, height/2), (width-square_size, height/2),   # 中间
-            (0, height-square_size), (width/2, height-square_size), (width-square_size, height-square_size)  # 下边
+            (0, 0), (width / 2, 0), (width - square_size, 0),  # 上边
+            (0, height / 2), (width - square_size, height / 2),  # 中间
+            (0, height - square_size), (width / 2, height - square_size), (width - square_size, height - square_size)
+            # 下边
         ]
 
         for x, y in corner_positions:
             self.canvas.create_rectangle(
-                x, y, x+square_size, y+square_size,
+                x, y, x + square_size, y + square_size,
                 fill='#00B7FF',  # 改用蓝色填充，避免被透明化
                 outline='#00B7FF'
             )
@@ -171,13 +236,17 @@ class ScreenshotTool:
                         self.capture_fullscreen()  # 双击截取全屏
                         return
                     self.last_click_time = current_time
-                    # 开始拖拽，创建新的选择框
+                    # pynput 的坐标已经是物理坐标，直接使用
                     self.start_pos = (x, y)
+                    # 转换为逻辑坐标用于选择框显示
+                    logical_x, logical_y = self._physical_to_logical(x, y)
+                    self.start_pos_logical = (logical_x, logical_y)
                     self.create_selection_box()
                 else:
                     # 如果没有起始位置，说明可能是双击或其他情况
                     if not self.start_pos:
                         return
+                    # pynput 的坐标已经是物理坐标
                     end_pos = (x, y)
                     # 确保在释放鼠标时清理窗口
                     if self.selection_box:
@@ -192,14 +261,16 @@ class ScreenshotTool:
             self.cancel_capture()  # 出错时取消截图
 
     def on_move(self, x, y):
-        if self.is_capturing and self.start_pos and self.selection_box:
+        if self.is_capturing and self.start_pos_logical and self.selection_box:
+            # 将物理坐标转换为逻辑坐标用于选择框显示
+            logical_x, logical_y = self._physical_to_logical(x, y)
             # 如果鼠标移动且不在原始位置，且不是初始全屏状态
-            if (x, y) != self.start_pos and self.start_pos != (0, 0):
-                # 计算选择框的位置和大小
-                left = min(x, self.start_pos[0])
-                top = min(y, self.start_pos[1])
-                width = abs(x - self.start_pos[0])
-                height = abs(y - self.start_pos[1])
+            if (logical_x, logical_y) != self.start_pos_logical and self.start_pos_logical != (0, 0):
+                # 计算选择框的位置和大小（使用逻辑坐标）
+                left = min(logical_x, self.start_pos_logical[0])
+                top = min(logical_y, self.start_pos_logical[1])
+                width = abs(logical_x - self.start_pos_logical[0])
+                height = abs(logical_y - self.start_pos_logical[1])
 
                 if width < 1 or height < 1:
                     return
@@ -235,59 +306,60 @@ class ScreenshotTool:
                 self.text_window.title("答题助手")
                 self.text_window.geometry("800x600")
                 self.text_window.attributes('-topmost', True)  # 确保窗口在最上层
-                
+
                 # 创建文本框
                 self.text_area = tk.Text(self.text_window, wrap=tk.WORD)
                 self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                
+
                 # 创建按钮框架
                 button_frame = tk.Frame(self.text_window)
                 button_frame.pack(fill=tk.X, padx=10, pady=5)
-                
+
                 # 复制按钮
                 copy_button = tk.Button(
-                    button_frame, 
-                    text="复制到剪贴板", 
-                    command=lambda: [self.root.clipboard_clear(), 
-                                   self.root.clipboard_append(self.text_area.get("1.0", tk.END)), 
-                                   print("文本已复制到剪贴板")]
+                    button_frame,
+                    text="复制到剪贴板",
+                    command=lambda: [self.root.clipboard_clear(),
+                                     self.root.clipboard_append(self.text_area.get("1.0", tk.END)),
+                                     print("文本已复制到剪贴板")]
                 )
                 copy_button.pack(side=tk.LEFT, padx=5)
-                
+
                 # 关闭按钮
                 close_button = tk.Button(
-                    button_frame, 
-                    text="关闭", 
+                    button_frame,
+                    text="关闭",
                     command=lambda: [self.text_window.withdraw(), self.text_window.update()]  # 隐藏而不是销毁
                 )
                 close_button.pack(side=tk.RIGHT, padx=5)
-                
+
                 # 设置窗口位置在屏幕右侧
                 self.text_window.update_idletasks()
                 width = self.text_window.winfo_width()
                 height = self.text_window.winfo_height()
                 screen_width = self.text_window.winfo_screenwidth()
                 screen_height = self.text_window.winfo_screenheight()
-                
+
                 x = screen_width - width - 150
                 y = (screen_height - height) // 2
-                
+
                 self.text_window.geometry(f'+{x}+{y}')
-                
+
                 # 处理窗口关闭按钮事件
-                self.text_window.protocol("WM_DELETE_WINDOW", lambda: [self.text_window.withdraw(), self.text_window.update()])
+                self.text_window.protocol("WM_DELETE_WINDOW",
+                                          lambda: [self.text_window.withdraw(), self.text_window.update()])
             else:
                 # 如果窗口已经存在，确保它可见
                 self.text_window.deiconify()
-            
+
             # 清空文本框并插入新文本
             self.text_area.delete("1.0", tk.END)
             self.text_area.insert(tk.END, text)
-            
+
             # 确保窗口可见并在最前
             self.text_window.lift()
             self.text_window.focus_force()
-            
+
         except Exception as e:
             print(f"创建文本窗口失败: {e}")
 
@@ -296,27 +368,30 @@ class ScreenshotTool:
         if not self.ocr:
             print("OCR 未初始化")
             return
-            
+
         try:
-            result = self.ocr.ocr(image_path, cls=True)
+            result = self.ocr.predict(image_path)
             if result:
                 # 提取识别到的文本
                 texts = []
-                for line in result:
-                    for word_info in line:
-                        text = word_info[1][0]  # 获取识别的文本
-                        confidence = word_info[1][1]  # 获取置信度
-                        texts.append(text)
-                
+                for res in result:
+                    res.save_to_json("output")
+                    # print(res['rec_texts'])
+                    texts = res['rec_texts']
+                    # for word_info in line:
+                    #     text = word_info[1][0]  # 获取识别的文本
+                    #     confidence = word_info[1][1]  # 获取置信度
+                    #     texts.append(text)
+
                 # 将所有文本合并，用换行符分隔
                 full_text = '\n'.join(texts)
                 print("OCR 识别结果:")
                 print(full_text)
-                
+
                 # 先显示问题和加载提示
                 loading_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n正在获取答案..."
                 self.root.after(100, lambda: self.show_text_window(loading_text))
-                
+
                 # 获取API答案
                 try:
                     def update_answer():
@@ -335,21 +410,21 @@ class ScreenshotTool:
                             if self.text_area:
                                 self.text_area.delete("1.0", tk.END)
                                 self.text_area.insert(tk.END, error_text)
-                
+
                     # 在主线程中执行更新
                     self.root.after(200, update_answer)
-                    
+
                 except Exception as e:
                     print(f"获取答案失败: {e}")
-                
+
                 # 自动复制到剪贴板
                 self.root.clipboard_clear()
                 self.root.clipboard_append(full_text)
                 print("文本已复制到剪贴板")
-                
+
             else:
                 print("未识别到文本")
-                
+
         except Exception as e:
             print(f"OCR 识别失败: {e}")
 
@@ -379,7 +454,7 @@ class ScreenshotTool:
             "response_format": {"type": "text"}
         }
         headers = {
-            "Authorization": "Bearer <string>",
+            "Authorization": "Bearer sk-fwhgteweqhqfijpvqkqxgkpxbkvgkqktzxjjvbhkpowdxtif",
             "Content-Type": "application/json"
         }
 
@@ -399,6 +474,7 @@ class ScreenshotTool:
                 left, top = 0, 0
                 right, bottom = self.screen_width, self.screen_height
             else:
+                # start_pos 和 end_pos 已经是物理坐标，直接使用
                 # 确保坐标正确（处理从右下往左上拖动的情况）
                 left = max(0, min(start_pos[0], end_pos[0]))
                 top = max(0, min(start_pos[1], end_pos[1]))
@@ -412,6 +488,8 @@ class ScreenshotTool:
             if width < 1 or height < 1:
                 print("截图区域太小")
                 return
+
+            print(f"截图区域: ({left}, {top}) -> ({right}, {bottom}), 尺寸: {width}x{height}")
 
             # 截图
             try:
@@ -435,6 +513,7 @@ class ScreenshotTool:
         finally:
             # 清空拖拽信息
             self.start_pos = None
+            self.start_pos_logical = None
             if self.selection_box:
                 self.selection_box.destroy()
                 self.selection_box = None
@@ -449,6 +528,7 @@ class ScreenshotTool:
             self.overlay = None
         self.is_capturing = False
         self.start_pos = None
+        self.start_pos_logical = None
         self.last_click_time = 0
         return 'break'  # 阻止事件继续传播
 
@@ -493,8 +573,10 @@ class ScreenshotTool:
         finally:
             # 清理状态
             self.start_pos = None
+            self.start_pos_logical = None
             self.is_capturing = False
             self.last_click_time = 0
+
 
 def main():
     screenshot_tool = ScreenshotTool()
