@@ -432,7 +432,7 @@ class ScreenshotTool:
         url = "https://api.siliconflow.cn/v1/chat/completions"
 
         payload = {
-            "model": "deepseek-ai/DeepSeek-V3",
+            "model": "deepseek-ai/DeepSeek-V3.2-Exp",
             "messages": [
                 {
                     "role": "system",
