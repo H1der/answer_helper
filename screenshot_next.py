@@ -2,11 +2,11 @@ import time
 import tkinter as tk
 import ctypes
 import ctypes.wintypes
+import base64
 
 import keyboard
 import requests
 from PIL import ImageGrab
-from paddleocr import PaddleOCR
 from pynput import mouse
 
 
@@ -29,14 +29,11 @@ class ScreenshotTool:
         # 获取屏幕尺寸和缩放比例
         self._init_screen_info()
 
-        # 初始化 OCR
-        try:
-            self.ocr = PaddleOCR(use_doc_orientation_classify=False,
-                                 use_doc_unwarping=False, use_textline_orientation=True, lang="ch")
-            print("OCR 初始化成功")
-        except Exception as e:
-            print(f"OCR 初始化失败: {e}")
-            self.ocr = None
+        # API配置（请替换为您自己的API key）
+        self.api_url = "https://api.siliconflow.cn/v1/chat/completions"
+        # 重要：请替换为您自己的API key
+        self.api_key = "sk-fwhgteweqhqfijpvqkqxgkpxbkvgkqktzxjjvbhkpowdxtif"
+        print("使用在线大模型API进行文字识别")
 
         # 添加文本窗口引用
         self.text_window = None
@@ -365,69 +362,112 @@ class ScreenshotTool:
             print(f"创建文本窗口失败: {e}")
 
     def perform_ocr(self, image_path):
-        """对图片进行 OCR 识别"""
-        if not self.ocr:
-            print("OCR 未初始化")
-            return
-
+        """使用在线大模型API对图片进行文字识别"""
         try:
-            result = self.ocr.predict(image_path)
-            if result:
-                # 提取识别到的文本
-                texts = []
-                for res in result:
-                    res.save_to_json("output")
-                    # print(res['rec_texts'])
-                    texts = res['rec_texts']
-                    # for word_info in line:
-                    #     text = word_info[1][0]  # 获取识别的文本
-                    #     confidence = word_info[1][1]  # 获取置信度
-                    #     texts.append(text)
+            # 读取图片并转换为base64
+            with open(image_path, 'rb') as f:
+                image_data = f.read()
+                base64_image = base64.b64encode(image_data).decode('utf-8')
 
-                # 将所有文本合并，用换行符分隔
-                full_text = '\n'.join(texts)
-                print("OCR 识别结果:")
-                print(full_text)
+            # 构建请求数据
+            payload = {
+                "max_tokens": 4096,
+                "temperature": 0,
+                "top_p": 0.7,
+                "top_k": 50,
+                "frequency_penalty": 0,
+                "chat_id": "N0P6u00",
+                "model": "deepseek-ai/DeepSeek-OCR",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{base64_image}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "识别题目问题和选项"
+                            }
+                        ]
+                    }
+                ]
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            print("正在调用在线OCR API...")
 
-                # 先显示问题和加载提示
-                loading_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n正在获取答案..."
-                self.root.after(100, lambda: self.show_text_window(loading_text))
+            # 发送请求（添加超时）
+            try:
+                response = requests.post(self.api_url, json=payload, headers=headers, timeout=30)
+                print(f"API响应状态码: {response.status_code}")
 
-                # 获取API答案
-                try:
-                    def update_answer():
-                        try:
-                            answer = self.get_answer(full_text)
-                            # 组合显示文本
-                            display_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n{answer}"
-                            # 更新文本窗口
-                            if self.text_area:
-                                self.text_area.delete("1.0", tk.END)
-                                self.text_area.insert(tk.END, display_text)
-                        except Exception as e:
-                            print(f"获取答案失败: {e}")
-                            # 如果获取答案失败，显示错误信息
-                            error_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n获取答案失败: {e}"
-                            if self.text_area:
-                                self.text_area.delete("1.0", tk.END)
-                                self.text_area.insert(tk.END, error_text)
+                # 检查响应状态
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                        # 提取识别到的文本
+                        full_text = result['choices'][0]['message']['content']
+                        print("OCR 识别结果:")
+                        print(full_text)
+                    except ValueError as json_error:
+                        print(f"JSON解析失败: {json_error}")
+                        print(f"响应内容: {response.text[:500]}")  # 打印前500字符
+                        return
+                else:
+                    print(f"API调用失败: HTTP {response.status_code}")
+                    print(f"响应内容: {response.text[:500]}")  # 打印前500字符
+                    return
+            except requests.exceptions.Timeout:
+                print("API请求超时（30秒）")
+                return
+            except requests.exceptions.RequestException as req_error:
+                print(f"API请求异常: {req_error}")
+                return
 
-                    # 在主线程中执行更新
-                    self.root.after(200, update_answer)
+            # 先显示问题和加载提示
+            loading_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n正在获取答案..."
+            self.root.after(100, lambda: self.show_text_window(loading_text))
 
-                except Exception as e:
-                    print(f"获取答案失败: {e}")
+            # 获取API答案
+            try:
+                def update_answer():
+                    try:
+                        answer = self.get_answer(full_text)
+                        # 组合显示文本
+                        display_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n{answer}"
+                        # 更新文本窗口
+                        if self.text_area:
+                            self.text_area.delete("1.0", tk.END)
+                            self.text_area.insert(tk.END, display_text)
+                    except Exception as e:
+                        print(f"获取答案失败: {e}")
+                        # 如果获取答案失败，显示错误信息
+                        error_text = f"--------------------问题--------------------\n{full_text}\n\n--------------------答案--------------------\n获取答案失败: {e}"
+                        if self.text_area:
+                            self.text_area.delete("1.0", tk.END)
+                            self.text_area.insert(tk.END, error_text)
 
-                # 自动复制到剪贴板
-                self.root.clipboard_clear()
-                self.root.clipboard_append(full_text)
-                print("文本已复制到剪贴板")
+                # 在主线程中执行更新
+                self.root.after(200, update_answer)
 
-            else:
-                print("未识别到文本")
+            except Exception as e:
+                print(f"获取答案失败: {e}")
+
+            # 自动复制到剪贴板
+            self.root.clipboard_clear()
+            self.root.clipboard_append(full_text)
+            print("文本已复制到剪贴板")
 
         except Exception as e:
-            print(f"OCR 识别失败: {e}")
+            print(f"在线OCR识别失败: {e}")
+            import traceback
+            traceback.print_exc()
 
     def get_answer(self, text):
         url = "https://api.siliconflow.cn/v1/chat/completions"
@@ -455,7 +495,7 @@ class ScreenshotTool:
             "response_format": {"type": "text"}
         }
         headers = {
-            "Authorization": "Bearer sk-fwhgteweqhqfijpvqkqxgkpxbkvgkqktzxjjvbhkpowdxtif",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
